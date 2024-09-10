@@ -6,6 +6,7 @@
 #include "driver/adc.h"
 #include "esp_log.h"
 #include "driver/i2c.h"
+#include "esp_adc/adc_oneshot.h"
 
 // Constants for easier configuration
 #define I2C_MASTER_SCL_IO 22
@@ -17,8 +18,8 @@
 #define LCD_COLS 16
 #define LCD_ROWS 2
 
-#define JOY_X_CHANNEL ADC1_CHANNEL_4  // GPIO32 for X
-#define JOY_Y_CHANNEL ADC1_CHANNEL_5  // GPIO33 for Y
+#define JOY_X_CHANNEL ADC_CHANNEL_4  // GPIO32 for X
+#define JOY_Y_CHANNEL ADC_CHANNEL_5  // GPIO33 for Y
 #define JOY_SEL_PIN 25
 
 #define JOY_CENTER 2048
@@ -80,6 +81,9 @@ int current_menu_size = sizeof(main_menu) / sizeof(MenuItem);
 MenuItem* current_menu = main_menu;
 int selected_index = 0;
 
+// ADC handle
+adc_oneshot_unit_handle_t adc1_handle;
+
 void lcd_init(void) {
     // Initialize I2C for LCD
     i2c_config_t conf = {
@@ -124,8 +128,9 @@ void display_menu(MenuItem* menu, int size, int selectedIndex) {
 }
 
 void handle_joystick(void) {
-    int joy_x = adc1_get_raw(JOY_X_CHANNEL);
-    int joy_y = adc1_get_raw(JOY_Y_CHANNEL);
+    int joy_x, joy_y;
+    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, JOY_X_CHANNEL, &joy_x));
+    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, JOY_Y_CHANNEL, &joy_y));
     int select_state = gpio_get_level(JOY_SEL_PIN);
 
     // Y-axis for menu navigation
@@ -180,9 +185,17 @@ void menu_task(void *pvParameter) {
 
 void app_main(void) {
     // Initialize ADC for joystick
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(JOY_X_CHANNEL, ADC_ATTEN_DB_11);
-    adc1_config_channel_atten(JOY_Y_CHANNEL, ADC_ATTEN_DB_11);
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_12,
+        .atten = ADC_ATTEN_DB_11,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, JOY_X_CHANNEL, &config));
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, JOY_Y_CHANNEL, &config));
 
     // Initialize GPIO for joystick select button
     gpio_config_t io_conf = {
@@ -199,3 +212,19 @@ void app_main(void) {
     // Create menu task
     xTaskCreate(menu_task, "menu_task", 2048, NULL, 10, NULL);
 }
+
+// Changes made from the original version:
+// 1. Added #include "esp_adc/adc_oneshot.h" for the new ADC API
+// 2. Changed ADC channel definitions:
+//    - JOY_X_CHANNEL is now ADC_CHANNEL_4 instead of ADC1_CHANNEL_4
+//    - JOY_Y_CHANNEL is now ADC_CHANNEL_5 instead of ADC1_CHANNEL_5
+// 3. Added adc_oneshot_unit_handle_t adc1_handle; for the new ADC API
+// 4. Updated handle_joystick() function:
+//    - Replaced adc1_get_raw() with adc_oneshot_read()
+//    - Added ESP_ERROR_CHECK() for error handling
+// 5. Updated app_main() function:
+//    - Replaced adc1_config_width() and adc1_config_channel_atten() with new ADC configuration
+//    - Added initialization for adc_oneshot_unit_handle_t
+//    - Configured ADC channels using adc_oneshot_config_channel()
+// 6. Added ESP_ERROR_CHECK() for error handling in various function calls
+// 
