@@ -27,12 +27,14 @@
 
 static const char *TAG = "MENU_SYSTEM";
 
-// Menu item structure
+// Extended MenuItem structure to include timer settings
 typedef struct MenuItem {
     const char* name;
     void (*action)(void);
     struct MenuItem* submenu;
     int submenuSize;
+    int initialMinutes;
+    int incrementSeconds;
 } MenuItem;
 
 // Function prototypes
@@ -43,6 +45,7 @@ void lcd_set_cursor(uint8_t col, uint8_t row);
 void display_menu(MenuItem* menu, int size, int selectedIndex);
 void handle_joystick(void);
 void execute_menu_item(MenuItem* item);
+void set_timer(int minutes, int increment);
 
 // Sample menu actions
 void start_game(void) { 
@@ -63,23 +66,63 @@ void exit_menu(void) {
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 }
 
+void set_timer_5min(void) {
+    set_timer(5, 0);
+}
+
+void set_timer_10min(void) {
+    set_timer(10, 0);
+}
+
+void set_timer_15min(void) {
+    set_timer(15, 0);
+}
+
+void set_timer_30min(void) {
+    set_timer(30, 0);
+}
+
+void set_timer_60min(void) {
+    set_timer(60, 0);
+}
+
+void set_timer_3_2(void) {
+    set_timer(3, 2);
+}
+
 // Submenu items
 MenuItem options_submenu[] = {
-    {"Sound", NULL, NULL, 0},
-    {"Difficulty", NULL, NULL, 0},
-    {"Back", NULL, NULL, 0}
+    {"Sound", NULL, NULL, 0, 0, 0},
+    {"Difficulty", NULL, NULL, 0, 0, 0},
+    {"Back", NULL, NULL, 0, 0, 0}
+};
+
+// Timer submenu
+MenuItem timer_submenu[] = {
+    {"5 minutes", set_timer_5min, NULL, 0, 5, 0},
+    {"10 minutes", set_timer_10min, NULL, 0, 10, 0},
+    {"15 minutes", set_timer_15min, NULL, 0, 15, 0},
+    {"30 minutes", set_timer_30min, NULL, 0, 30, 0},
+    {"60 minutes", set_timer_60min, NULL, 0, 60, 0},
+    {"3|2", set_timer_3_2, NULL, 0, 3, 2},
+    {"Back", NULL, NULL, 0, 0, 0}
 };
 
 // Main menu
 MenuItem main_menu[] = {
-    {"Start Game", start_game, NULL, 0},
-    {"Options", show_options, options_submenu, 3},
-    {"Exit", exit_menu, NULL, 0}
+    {"Start Game", start_game, NULL, 0, 0, 0},
+    {"Set Timer", NULL, timer_submenu, 7, 0, 0},
+    {"Options", show_options, options_submenu, 3, 0, 0},
+    {"Exit", exit_menu, NULL, 0, 0, 0}
 };
 
 int current_menu_size = sizeof(main_menu) / sizeof(MenuItem);
 MenuItem* current_menu = main_menu;
 int selected_index = 0;
+
+// Global variables for timer settings
+int current_timer_minutes = 10;  // Default to 10 minutes
+int current_timer_increment = 0; // Default to no increment
 
 // ADC handle
 adc_oneshot_unit_handle_t adc1_handle;
@@ -173,6 +216,25 @@ void execute_menu_item(MenuItem* item) {
         current_menu_size = sizeof(main_menu) / sizeof(MenuItem);
         selected_index = 0;
     }
+    
+    // Set timer if applicable
+    if (item->initialMinutes > 0) {
+        set_timer(item->initialMinutes, item->incrementSeconds);
+    }
+}
+
+void set_timer(int minutes, int increment) {
+    current_timer_minutes = minutes;
+    current_timer_increment = increment;
+    lcd_clear();
+    char timer_str[32];
+    if (increment > 0) {
+        snprintf(timer_str, sizeof(timer_str), "Timer: %d|%d", minutes, increment);
+    } else {
+        snprintf(timer_str, sizeof(timer_str), "Timer: %d min", minutes);
+    }
+    lcd_write_string(timer_str);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
 }
 
 void menu_task(void *pvParameter) {
@@ -212,19 +274,3 @@ void app_main(void) {
     // Create menu task
     xTaskCreate(menu_task, "menu_task", 2048, NULL, 10, NULL);
 }
-
-// Changes made from the original version:
-// 1. Added #include "esp_adc/adc_oneshot.h" for the new ADC API
-// 2. Changed ADC channel definitions:
-//    - JOY_X_CHANNEL is now ADC_CHANNEL_4 instead of ADC1_CHANNEL_4
-//    - JOY_Y_CHANNEL is now ADC_CHANNEL_5 instead of ADC1_CHANNEL_5
-// 3. Added adc_oneshot_unit_handle_t adc1_handle; for the new ADC API
-// 4. Updated handle_joystick() function:
-//    - Replaced adc1_get_raw() with adc_oneshot_read()
-//    - Added ESP_ERROR_CHECK() for error handling
-// 5. Updated app_main() function:
-//    - Replaced adc1_config_width() and adc1_config_channel_atten() with new ADC configuration
-//    - Added initialization for adc_oneshot_unit_handle_t
-//    - Configured ADC channels using adc_oneshot_config_channel()
-// 6. Added ESP_ERROR_CHECK() for error handling in various function calls
-// 
