@@ -14,6 +14,8 @@
 
 #include "esp_lcd_ili9341.h"
 
+extern void update_menu(const char **items, int item_count, int selected_index);
+extern void update_timers(int player1_time, int player2_time, int active_player);
 static const char *TAG = "example";
 
 // LCD Pin Configuration
@@ -214,7 +216,7 @@ void app_main(void)
     gpio_config(&io_conf);
 
     // Create GUI
-    create_application_gui();
+    example_lvgl_demo_ui(disp);
 
     // Create tasks
     xTaskCreate(button_task, "button_task", 4096, NULL, 10, NULL);
@@ -259,22 +261,16 @@ static void create_application_gui(void)
 
 static void display_menu(void)
 {
-    char menu_text[256] = "";
+    const char *menu_items[current_menu_size];
     for (int i = 0; i < current_menu_size; i++) {
-        char line[64];
-        snprintf(line, sizeof(line), "%s%s\n", (i == selected_index) ? "> " : "  ", current_menu[i].name);
-        strcat(menu_text, line);
+        menu_items[i] = current_menu[i].name;
     }
-    lv_label_set_text(menu_label, menu_text);
+    update_menu(menu_items, current_menu_size, selected_index);
 }
 
 static void update_timers(void)
 {
-    char timer1_text[32], timer2_text[32];
-    snprintf(timer1_text, sizeof(timer1_text), "P1: %02d:%02d", player1_time / 60, player1_time % 60);
-    snprintf(timer2_text, sizeof(timer2_text), "P2: %02d:%02d", player2_time / 60, player2_time % 60);
-    lv_label_set_text(timer1_label, timer1_text);
-    lv_label_set_text(timer2_label, timer2_text);
+    update_timers(player1_time, player2_time, active_player);
 }
 
 static void button_task(void *pvParameter)
