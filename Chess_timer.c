@@ -7,7 +7,7 @@ module chess_timer (
 );
 
     // Parameters for initial time (15 minutes = 900 seconds)
-    parameter INITIAL_TIME = 16'd900;
+    parameter INITIAL_TIME = 16'd900; //change to hex?
 
     // 1 Hz clock divider (for a 50 MHz system clock)
     reg [25:0] clk_divider;
