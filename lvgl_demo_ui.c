@@ -1,90 +1,120 @@
 #include "lvgl.h"
+#include <stdio.h>
+#include "esp_log.h"
+
+static const char *TAG = "lvgl_demo_ui";
 
 static lv_obj_t *main_screen;
-static lv_obj_t *menu_list;
-static lv_obj_t *timer_panel;
+static lv_obj_t *menu_cont;
 static lv_obj_t *timer1_label;
 static lv_obj_t *timer2_label;
-static lv_obj_t *active_player_indicator;
+static lv_obj_t *msg_label;
+static lv_timer_t *msg_timer = NULL;
+static lv_style_t style_msg_bg;
 
-// Function prototypes
-void create_main_screen(lv_disp_t *disp);
-void update_menu(const char **items, int item_count, int selected_index);
-void update_timers(int player1_time, int player2_time, int active_player);
+// Timer callback for message hiding
+static void msg_timer_cb(lv_timer_t *timer)
+{
+    lv_obj_t *msg_bg = timer->user_data;
+    
+    // Hide both the background and the message label
+    lv_obj_add_flag(msg_bg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(lv_obj_get_child(msg_bg, 0), LV_OBJ_FLAG_HIDDEN);
+    
+    // Delete the timer
+    if (msg_timer) {
+        lv_timer_del(msg_timer);
+        msg_timer = NULL;
+    }
+}
 
 void example_lvgl_demo_ui(lv_disp_t *disp)
 {
-    create_main_screen(disp);
-}
-
-void create_main_screen(lv_disp_t *disp)
-{
-    main_screen = lv_obj_create(NULL);
-    lv_disp_load_scr(main_screen);
-
-    // Create a nice background
-    lv_obj_set_style_bg_color(main_screen, lv_color_hex(0x2c3e50), 0);
+    // Get the current screen
+    main_screen = lv_disp_get_scr_act(disp);
+    
+    // Set screen background to black
+    lv_obj_set_style_bg_color(main_screen, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(main_screen, LV_OPA_COVER, 0);
 
-    // Create a container for the menu
-    lv_obj_t *menu_cont = lv_obj_create(main_screen);
-    lv_obj_set_size(menu_cont, lv_pct(100), lv_pct(60));
-    lv_obj_align(menu_cont, LV_ALIGN_TOP_MID, 0, 10);
-    lv_obj_set_style_bg_color(menu_cont, lv_color_hex(0x34495e), 0);
+    // Create menu container (reduce height to 70% to make room for message)
+    menu_cont = lv_obj_create(main_screen);
+    lv_obj_set_size(menu_cont, lv_pct(100), lv_pct(70));
+    lv_obj_align(menu_cont, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(menu_cont, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(menu_cont, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(menu_cont, 0, 0);
-    lv_obj_set_style_radius(menu_cont, 10, 0);
+    lv_obj_clear_flag(menu_cont, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Create the menu list
-    menu_list = lv_list_create(menu_cont);
-    lv_obj_set_size(menu_list, lv_pct(90), lv_pct(90));
-    lv_obj_center(menu_list);
-    lv_obj_set_style_bg_color(menu_list, lv_color_hex(0x34495e), 0);
-    lv_obj_set_style_bg_opa(menu_list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(menu_list, 0, 0);
+    // Create timer labels
+    timer1_label = lv_label_create(main_screen);
+    lv_obj_align(timer1_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+    lv_obj_set_style_text_color(timer1_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(timer1_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text(timer1_label, "P1: 10:00");
 
-    // Create a container for the timers
-    timer_panel = lv_obj_create(main_screen);
-    lv_obj_set_size(timer_panel, lv_pct(100), lv_pct(35));
-    lv_obj_align(timer_panel, LV_ALIGN_BOTTOM_MID, 0, -10);
-    lv_obj_set_style_bg_color(timer_panel, lv_color_hex(0x2980b9), 0);
-    lv_obj_set_style_bg_opa(timer_panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(timer_panel, 0, 0);
-    lv_obj_set_style_radius(timer_panel, 10, 0);
+    timer2_label = lv_label_create(main_screen);
+    lv_obj_align(timer2_label, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+    lv_obj_set_style_text_color(timer2_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(timer2_label, &lv_font_montserrat_14, 0);
+    lv_label_set_text(timer2_label, "P2: 10:00");
 
-    // Create labels for player timers
-    timer1_label = lv_label_create(timer_panel);
-    lv_obj_align(timer1_label, LV_ALIGN_LEFT_MID, 20, 0);
-    lv_obj_set_style_text_color(timer1_label, lv_color_hex(0xecf0f1), 0);
-    lv_obj_set_style_text_font(timer1_label, &lv_font_montserrat_28, 0);
+    // Initialize message background style
+    lv_style_init(&style_msg_bg);
+    lv_style_set_bg_color(&style_msg_bg, lv_color_make(40, 40, 40));  // Dark gray background
+    lv_style_set_bg_opa(&style_msg_bg, LV_OPA_70);  // Semi-transparent
+    lv_style_set_pad_all(&style_msg_bg, 10);  // Padding around text
+    lv_style_set_radius(&style_msg_bg, 5);    // Rounded corners
 
-    timer2_label = lv_label_create(timer_panel);
-    lv_obj_align(timer2_label, LV_ALIGN_RIGHT_MID, -20, 0);
-    lv_obj_set_style_text_color(timer2_label, lv_color_hex(0xecf0f1), 0);
-    lv_obj_set_style_text_font(timer2_label, &lv_font_montserrat_28, 0);
+    // Create message background container
+    lv_obj_t *msg_bg = lv_obj_create(main_screen);
+    lv_obj_add_style(msg_bg, &style_msg_bg, 0);
+    lv_obj_align(msg_bg, LV_ALIGN_BOTTOM_MID, 0, -35);  // Position above timers
+    lv_obj_set_size(msg_bg, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_add_flag(msg_bg, LV_OBJ_FLAG_HIDDEN);
 
-    // Create an active player indicator
-    active_player_indicator = lv_obj_create(timer_panel);
-    lv_obj_set_size(active_player_indicator, 20, 20);
-    lv_obj_align(active_player_indicator, LV_ALIGN_TOP_MID, 0, 10);
-    lv_obj_set_style_bg_color(active_player_indicator, lv_color_hex(0x27ae60), 0);
-    lv_obj_set_style_radius(active_player_indicator, LV_RADIUS_CIRCLE, 0);
+    // Create message label
+    msg_label = lv_label_create(msg_bg);
+    lv_obj_set_style_text_color(msg_label, lv_color_white(), 0);
+    lv_obj_set_style_text_font(msg_label, &lv_font_montserrat_14, 0);
+    lv_obj_center(msg_label);
+    lv_obj_add_flag(msg_label, LV_OBJ_FLAG_HIDDEN);
 }
 
 void update_menu(const char **items, int item_count, int selected_index)
 {
-    lv_obj_clean(menu_list);
-
+    ESP_LOGI(TAG, "Updating menu with %d items, selected: %d", item_count, selected_index);
+    
+    // Clear existing menu items
+    lv_obj_clean(menu_cont);
+    
+    // Create new menu items
     for (int i = 0; i < item_count; i++) {
-        lv_obj_t *btn = lv_list_add_btn(menu_list, NULL, items[i]);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x34495e), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-        lv_obj_set_style_text_color(btn, lv_color_hex(0xecf0f1), 0);
+        lv_obj_t *item = lv_label_create(menu_cont);
         
+        // Configure label
+        lv_label_set_text(item, items[i]);
+        lv_obj_set_width(item, lv_pct(90));  // Set width to 90% of container
+        
+        // Position label - increased vertical spacing for better readability
+        lv_obj_align(item, LV_ALIGN_TOP_LEFT, 20, 20 + i * 40);
+        
+        // Set text style
+        lv_obj_set_style_text_font(item, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_opa(item, LV_OPA_COVER, 0);
+        
+        // Set color based on selection
         if (i == selected_index) {
-            lv_obj_set_style_bg_color(btn, lv_color_hex(0x3498db), 0);
+            lv_obj_set_style_text_color(item, lv_color_make(255, 0, 0), 0);  // Red for selected
+        } else {
+            lv_obj_set_style_text_color(item, lv_color_make(255, 255, 255), 0);  // White for others
         }
+        
+        ESP_LOGI(TAG, "Created menu item: %s", items[i]);
     }
+    
+    // Force an immediate refresh
+    lv_refr_now(NULL);
 }
 
 void update_timers(int player1_time, int player2_time, int active_player)
@@ -96,15 +126,35 @@ void update_timers(int player1_time, int player2_time, int active_player)
     lv_label_set_text(timer1_label, timer1_text);
     lv_label_set_text(timer2_label, timer2_text);
 
-    if (active_player == 1) {
-        lv_obj_align(active_player_indicator, LV_ALIGN_LEFT_MID, 10, 0);
-    } else if (active_player == 2) {
-        lv_obj_align(active_player_indicator, LV_ALIGN_RIGHT_MID, -10, 0);
-    } else {
-        lv_obj_align(active_player_indicator, LV_ALIGN_TOP_MID, 0, 10);
-    }
+    // Update colors based on active player
+    lv_obj_set_style_text_color(timer1_label, 
+        active_player == 1 ? lv_color_make(255, 0, 0) : lv_color_make(255, 255, 255), 0);
+    lv_obj_set_style_text_color(timer2_label, 
+        active_player == 2 ? lv_color_make(255, 0, 0) : lv_color_make(255, 255, 255), 0);
 }
 
-// Add these function declarations to your main file (spi_lcd_touch_example_main.c)
-extern void update_menu(const char **items, int item_count, int selected_index);
-extern void update_timers(int player1_time, int player2_time, int active_player);
+void display_message(const char *message)
+{
+    // Get message background (parent of msg_label)
+    lv_obj_t *msg_bg = lv_obj_get_parent(msg_label);
+    
+    // Update message text
+    lv_label_set_text(msg_label, message);
+    
+    // Ensure message and background are properly sized
+    lv_obj_set_size(msg_bg, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_center(msg_label);
+    
+    // Show message and background
+    lv_obj_clear_flag(msg_bg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(msg_label, LV_OBJ_FLAG_HIDDEN);
+    
+    // Delete any existing timer
+    if (msg_timer) {
+        lv_timer_del(msg_timer);
+        msg_timer = NULL;
+    }
+    
+    // Create new timer to hide the message after 3 seconds
+    msg_timer = lv_timer_create(msg_timer_cb, 3000, msg_bg);
+}

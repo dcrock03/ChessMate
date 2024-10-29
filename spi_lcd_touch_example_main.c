@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
@@ -11,15 +11,10 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "lvgl.h"
-
+#include "menu_data.h"
 #include "esp_lcd_ili9341.h"
 
-extern void update_menu(const char **items, int item_count, int selected_index);
-extern void update_timers(int player1_time, int player2_time, int active_player);
-static const char *TAG = "example";
-
-// LCD Pin Configuration
-#define LCD_HOST  SPI2_HOST
+#define MAX_MENU_DEPTH 5
 #define LCD_PIXEL_CLOCK_HZ     (20 * 1000 * 1000)
 #define LCD_BK_LIGHT_ON_LEVEL  1
 #define LCD_BK_LIGHT_OFF_LEVEL !LCD_BK_LIGHT_ON_LEVEL
@@ -31,105 +26,265 @@ static const char *TAG = "example";
 #define PIN_NUM_LCD_CS         5
 #define PIN_NUM_BK_LIGHT       16
 
-// Button Pin Configuration
-#define PIN_BUTTON_UP          21
-#define PIN_BUTTON_DOWN        22
-#define PIN_BUTTON_SELECT      14
-#define PIN_BUTTON_BACK        12
-#define PIN_BUTTON_PLAYER1     13
+#define PIN_BUTTON_UP          21  // Physical up button
+#define PIN_BUTTON_DOWN        22  // Physical down button
+#define PIN_BUTTON_SELECT      14  // Physical select button
+#define PIN_BUTTON_PLAYER1     12
 #define PIN_BUTTON_PLAYER2     26
 
 #define LCD_H_RES              240
 #define LCD_V_RES              320
+#define LCD_HOST              SPI2_HOST
 
-// LVGL specific configuration
-#define LVGL_TICK_PERIOD_MS    2
+static const char *TAG = "example";
 
-static lv_disp_draw_buf_t disp_buf;
-static lv_color_t buf1[LCD_H_RES * 10];
-static lv_color_t buf2[LCD_H_RES * 10];
-static lv_disp_drv_t disp_drv;
 
-// Menu System
-typedef struct MenuItem {
-    const char* name;
-    void (*action)(void);
-    struct MenuItem* submenu;
-    int submenuSize;
-    int initialMinutes;
-    int incrementSeconds;
-} MenuItem;
 
-// Function prototypes
-static void button_task(void *pvParameter);
-static void timer_task(void *pvParameter);
-static void lv_tick_task(void *arg);
-static void create_application_gui(void);
-static void display_menu(void);
-static void update_timers(void);
-
-// Timer variables
-static int player1_time = 600; // 10 minutes in seconds
-static int player2_time = 600;
-static int active_player = 0; // 0: no active player, 1: player1, 2: player2
-static int timer_running = 0;
-
-// Menu variables
+// Global variables for menu state
 static MenuItem* current_menu;
 static int current_menu_size;
-static int selected_index = 0;
+static int selected_index;
 
-// LVGL objects
-static lv_obj_t *menu_label;
-static lv_obj_t *timer1_label;
-static lv_obj_t *timer2_label;
+// Menu stack for navigation
+static struct {
+    MenuItem* menu;
+    int size;
+    int selected;
+} menu_stack[MAX_MENU_DEPTH];
+static int menu_stack_top = -1;
 
-// Function to start the game
-void start_game(void) {
-    timer_running = 1;
-    active_player = 1; // Start with player 1
+// Function prototypes
+void example_lvgl_demo_ui(lv_disp_t *disp);
+void update_menu(const char **items, int item_count, int selected_index);
+void update_timers(int player1_time, int player2_time, int active_player);
+static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map);
+static void button_task(void *pvParameter);
+static void timer_task(void *pvParameter);
+
+// Menu navigation functions
+void menu_up(void) {
+    if (selected_index > 0) {
+        selected_index--;
+        const char* items[MAX_MENU_DEPTH * 10];
+        for (int i = 0; i < current_menu_size; i++) {
+            items[i] = current_menu[i].name;
+        }
+        update_menu(items, current_menu_size, selected_index);
+        ESP_LOGI(TAG, "Menu UP: index now %d", selected_index);
+    }
 }
 
-// Function to stop the game
-void stop_game(void) {
-    timer_running = 0;
-    active_player = 0;
+void menu_down(void) {
+    if (selected_index < current_menu_size - 1) {
+        selected_index++;
+        const char* items[MAX_MENU_DEPTH * 10];
+        for (int i = 0; i < current_menu_size; i++) {
+            items[i] = current_menu[i].name;
+        }
+        update_menu(items, current_menu_size, selected_index);
+        ESP_LOGI(TAG, "Menu DOWN: index now %d", selected_index);
+    }
 }
 
-// Function to set the timer
-void set_timer(int minutes, int increment) {
-    player1_time = minutes * 60;
-    player2_time = minutes * 60;
-    // TODO: Handle increment
+static bool pop_menu_state(void) {
+    if (menu_stack_top >= 0) {
+        current_menu = menu_stack[menu_stack_top].menu;
+        current_menu_size = menu_stack[menu_stack_top].size;
+        selected_index = menu_stack[menu_stack_top].selected;
+        menu_stack_top--;
+        return true;
+    }
+    return false;
 }
 
-// Timer submenu
-MenuItem timer_submenu[] = {
-    {"5 minutes", NULL, NULL, 0, 5, 0},
-    {"10 minutes", NULL, NULL, 0, 10, 0},
-    {"15 minutes", NULL, NULL, 0, 15, 0},
-    {"Back", NULL, NULL, 0, 0, 0}
-};
+static void push_menu_state(void) {
+    if (menu_stack_top < MAX_MENU_DEPTH - 1) {
+        menu_stack_top++;
+        menu_stack[menu_stack_top].menu = current_menu;
+        menu_stack[menu_stack_top].size = current_menu_size;
+        menu_stack[menu_stack_top].selected = selected_index;
+    }
+}
 
-// Main menu
-MenuItem main_menu[] = {
-    {"Start Game", start_game, NULL, 0, 0, 0},
-    {"Set Timer", NULL, timer_submenu, 4, 0, 0},
-    {"Stop Game", stop_game, NULL, 0, 0, 0},
-    {"Exit", NULL, NULL, 0, 0, 0}
-};
+void menu_select(void) {
+    MenuItem* selected_item = &current_menu[selected_index];
+    ESP_LOGI(TAG, "Selected item: %s", selected_item->name);
 
-void app_main(void)
+    if (strcmp(selected_item->name, "Back") == 0) {
+        if (pop_menu_state()) {
+            const char* items[MAX_MENU_DEPTH * 10];
+            for (int i = 0; i < current_menu_size; i++) {
+                items[i] = current_menu[i].name;
+            }
+            update_menu(items, current_menu_size, selected_index);
+        }
+        return;
+    }
+
+    if (selected_item->submenu != NULL) {
+        push_menu_state();
+        current_menu = selected_item->submenu;
+        current_menu_size = selected_item->submenu_size;
+        selected_index = 0;
+        
+        const char* items[MAX_MENU_DEPTH * 10];
+        for (int i = 0; i < current_menu_size; i++) {
+            items[i] = current_menu[i].name;
+        }
+        update_menu(items, current_menu_size, selected_index);
+    }
+    else if (selected_item->action != NULL) {
+        selected_item->action();
+    }
+}
+
+// Modified button task with better debouncing and state tracking
+static void button_task(void *pvParameter)
 {
-    static lv_disp_draw_buf_t disp_buf; // contains internal graphic buffer(s) called draw buffer(s)
-    static lv_disp_drv_t disp_drv;      // contains callback functions
+    // Initialize button states
+    bool last_up_state = false;
+    bool last_down_state = false;
+    bool last_select_state = false;
+    bool last_player1_state = false;
+    bool last_player2_state = false;
+    bool button_pressed = false;
+    
+    TickType_t last_press_time = 0;
+    const TickType_t debounce_delay = pdMS_TO_TICKS(50);  // 50ms debounce
 
-    ESP_LOGI(TAG, "Turn off LCD backlight");
-    gpio_config_t bk_gpio_config = {
-        .mode = GPIO_MODE_OUTPUT,
-        .pin_bit_mask = 1ULL << PIN_NUM_BK_LIGHT
-    };
-    ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
+    while (1) {
+        TickType_t now = xTaskGetTickCount();
+        
+        // Read current button states - active high with pull-down
+        bool current_up_state = gpio_get_level(PIN_BUTTON_UP);
+        bool current_down_state = gpio_get_level(PIN_BUTTON_DOWN);
+        bool current_select_state = gpio_get_level(PIN_BUTTON_SELECT);
+        bool current_player1_state = gpio_get_level(PIN_BUTTON_PLAYER1);
+        bool current_player2_state = gpio_get_level(PIN_BUTTON_PLAYER2);
+
+        // Check if enough time has passed since last button press
+        if ((now - last_press_time) >= debounce_delay && !button_pressed) {
+            // Up button (active high with pull-down)
+            if (current_up_state == 1 && last_up_state == 0) {
+                ESP_LOGI(TAG, "UP button pressed");
+                menu_up();
+                const char* items[MAX_MENU_DEPTH * 10];
+                for (int i = 0; i < current_menu_size; i++) {
+                    items[i] = current_menu[i].name;
+                }
+                update_menu(items, current_menu_size, selected_index);
+                button_pressed = true;
+                last_press_time = now;
+            }
+            
+            // Down button
+            else if (current_down_state == 1 && last_down_state == 0) {
+                ESP_LOGI(TAG, "DOWN button pressed");
+                menu_down();
+                const char* items[MAX_MENU_DEPTH * 10];
+                for (int i = 0; i < current_menu_size; i++) {
+                    items[i] = current_menu[i].name;
+                }
+                update_menu(items, current_menu_size, selected_index);
+                button_pressed = true;
+                last_press_time = now;
+            }
+            
+            // Select button
+            else if (current_select_state == 1 && last_select_state == 0) {
+                ESP_LOGI(TAG, "SELECT button pressed");
+                menu_select();
+                const char* items[MAX_MENU_DEPTH * 10];
+                for (int i = 0; i < current_menu_size; i++) {
+                    items[i] = current_menu[i].name;
+                }
+                update_menu(items, current_menu_size, selected_index);
+                button_pressed = true;
+                last_press_time = now;
+            }
+            
+            // Player button press handling
+            else if (timer_running) {
+                // Only handle player button presses if the timer is running
+                if (current_player1_state == 1 && last_player1_state == 0 && active_player == 1) {
+                    ESP_LOGI(TAG, "Player 1 button pressed");
+                    active_player = 2;  // Switch to Player 2
+                    display_message("Player 2's Turn");
+                    button_pressed = true;
+                    last_press_time = now;
+                }
+                else if (current_player2_state == 1 && last_player2_state == 0 && active_player == 2) {
+                    ESP_LOGI(TAG, "Player 2 button pressed");
+                    active_player = 1;  // Switch to Player 1
+                    display_message("Player 1's Turn");
+                    button_pressed = true;
+                    last_press_time = now;
+                }
+            }
+        }
+
+        // Reset button_pressed when all buttons are released
+        if (current_up_state == 0 && current_down_state == 0 && 
+            current_select_state == 0 && current_player1_state == 0 && 
+            current_player2_state == 0) {
+            button_pressed = false;
+        }
+
+        // Update last states
+        last_up_state = current_up_state;
+        last_down_state = current_down_state;
+        last_select_state = current_select_state;
+        last_player1_state = current_player1_state;
+        last_player2_state = current_player2_state;
+
+        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms polling interval
+    }
+}
+
+static void timer_task(void *pvParameter)
+{
+    while (1) {
+        if (timer_running) {
+            // Update the active player's timer
+            if (active_player == 1 && player1_time > 0) {
+                player1_time--;
+            } 
+            else if (active_player == 2 && player2_time > 0) {
+                player2_time--;
+            }
+
+            // Update display
+            update_timers(player1_time, player2_time, active_player);
+
+            // Check for game over conditions
+            if (player1_time == 0) {
+                timer_running = 0;
+                active_player = 0;
+                display_message("Game Over - Player 2 Wins!");
+            }
+            else if (player2_time == 0) {
+                timer_running = 0;
+                active_player = 0;
+                display_message("Game Over - Player 1 Wins!");
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Update every second
+    }
+}
+
+static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map) {
+    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t) drv->user_data;
+    int offsetx1 = area->x1;
+    int offsetx2 = area->x2;
+    int offsety1 = area->y1;
+    int offsety2 = area->y2;
+    esp_lcd_panel_draw_bitmap(panel_handle, offsetx1, offsety1, offsetx2 + 1, offsety2 + 1, color_map);
+    lv_disp_flush_ready(drv);
+}
+
+void app_main(void) {
+    static lv_disp_draw_buf_t disp_buf;  // Contains internal graphic buffer(s)
+    static lv_disp_drv_t disp_drv;       // Contains callback functions
 
     ESP_LOGI(TAG, "Initialize SPI bus");
     spi_bus_config_t buscfg = {
@@ -155,235 +310,101 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &io_handle));
 
+    ESP_LOGI(TAG, "Install ILI9341 panel driver");
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_NUM_LCD_RST,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         .bits_per_pixel = 16,
     };
-    ESP_LOGI(TAG, "Install ILI9341 panel driver");
     ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(io_handle, &panel_config, &panel_handle));
-
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
-
-    // user can flush pre-defined pattern to the screen before we turn on the screen or backlight
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
-
-    ESP_LOGI(TAG, "Turn on LCD backlight");
-    gpio_set_level(PIN_NUM_BK_LIGHT, LCD_BK_LIGHT_ON_LEVEL);
 
     ESP_LOGI(TAG, "Initialize LVGL library");
     lv_init();
-    // alloc draw buffers used by LVGL
-    // it's recommended to choose the size of the draw buffer(s) to be at least 1/10 screen sized
-    lv_color_t *buf1 = heap_caps_malloc(LCD_H_RES * 20 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+
+    // Allocate buffers for LVGL drawing
+    ESP_LOGI(TAG, "Allocate separate LVGL buffer");
+    void *buf1 = heap_caps_malloc(LCD_H_RES * 20 * sizeof(lv_color_t), MALLOC_CAP_DMA);
     assert(buf1);
-    lv_color_t *buf2 = heap_caps_malloc(LCD_H_RES * 20 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    void *buf2 = heap_caps_malloc(LCD_H_RES * 20 * sizeof(lv_color_t), MALLOC_CAP_DMA);
     assert(buf2);
-    // initialize LVGL draw buffers
+    
+    // Initialize LVGL draw buffers
+    ESP_LOGI(TAG, "Initialize LVGL draw buffers");
     lv_disp_draw_buf_init(&disp_buf, buf1, buf2, LCD_H_RES * 20);
 
     ESP_LOGI(TAG, "Register display driver to LVGL");
     lv_disp_drv_init(&disp_drv);
     disp_drv.hor_res = LCD_H_RES;
     disp_drv.ver_res = LCD_V_RES;
-    disp_drv.flush_cb = esp_lcd_panel_io_tx_param;
+    disp_drv.flush_cb = lvgl_flush_cb;
     disp_drv.draw_buf = &disp_buf;
     disp_drv.user_data = panel_handle;
-    lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
+    lv_disp_drv_register(&disp_drv);
 
-    ESP_LOGI(TAG, "Install LVGL tick timer");
-    // Tick interface for LVGL (using esp_timer to generate 2ms periodic event)
-    const esp_timer_create_args_t lvgl_tick_timer_args = {
-        .callback = &lv_tick_task,
-        .name = "lvgl_tick"
-    };
-    esp_timer_handle_t lvgl_tick_timer = NULL;
-    ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer, LVGL_TICK_PERIOD_MS * 1000));
-
-    // Initialize button GPIO
+    ESP_LOGI(TAG, "Initialize buttons");
+    // Initialize button GPIO with internal pull-down
     gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = (1ULL << PIN_BUTTON_UP) | (1ULL << PIN_BUTTON_DOWN) | 
-                        (1ULL << PIN_BUTTON_SELECT) | (1ULL << PIN_BUTTON_BACK) |
-                        (1ULL << PIN_BUTTON_PLAYER1) | (1ULL << PIN_BUTTON_PLAYER2),
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+    .intr_type = GPIO_INTR_DISABLE,
+    .mode = GPIO_MODE_INPUT,
+    .pin_bit_mask = ((1ULL << PIN_BUTTON_UP) | 
+                     (1ULL << PIN_BUTTON_DOWN) | 
+                     (1ULL << PIN_BUTTON_SELECT) |
+                     (1ULL << PIN_BUTTON_PLAYER1) |
+                     (1ULL << PIN_BUTTON_PLAYER2)),
+    .pull_up_en = GPIO_PULLUP_DISABLE,    // Disable pull-up
+    .pull_down_en = GPIO_PULLDOWN_ENABLE  // Enable pull-down
     };
     gpio_config(&io_conf);
 
-    // Create GUI
+    ESP_LOGI(TAG, "Initialize menu state");
+    // Initialize menu state
+    current_menu = main_menu;
+    current_menu_size = main_menu_size;
+    selected_index = 0;
+    menu_stack_top = -1;
+
+    ESP_LOGI(TAG, "Create GUI");
+    // Create GUI and initialize LVGL display
+    lv_disp_t *disp = lv_disp_get_default();
     example_lvgl_demo_ui(disp);
 
-    // Create tasks
+    ESP_LOGI(TAG, "Create tasks");
+    // Create tasks for button handling and timer
     xTaskCreate(button_task, "button_task", 4096, NULL, 10, NULL);
     xTaskCreate(timer_task, "timer_task", 4096, NULL, 10, NULL);
 
-    // Set initial menu
-    current_menu = main_menu;
-    current_menu_size = sizeof(main_menu) / sizeof(MenuItem);
-
-    while (1) {
-        // Run LVGL tasks
-        lv_task_handler();
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-}
-
-static void lv_tick_task(void *arg)
-{
-    (void) arg;
-    lv_tick_inc(LVGL_TICK_PERIOD_MS);
-}
-
-static void create_application_gui(void)
-{
-    // Create a screen
-    lv_obj_t *scr = lv_disp_get_scr_act(NULL);
-
-    // Create labels
-    menu_label = lv_label_create(scr);
-    lv_obj_align(menu_label, LV_ALIGN_TOP_LEFT, 10, 10);
-
-    timer1_label = lv_label_create(scr);
-    lv_obj_align(timer1_label, LV_ALIGN_TOP_LEFT, 10, 200);
-
-    timer2_label = lv_label_create(scr);
-    lv_obj_align(timer2_label, LV_ALIGN_TOP_RIGHT, -10, 200);
-
-    // Initial display
-    display_menu();
-    update_timers();
-}
-
-static void display_menu(void)
-{
-    const char *menu_items[current_menu_size];
+    ESP_LOGI(TAG, "Display initial menu");
+    // Display initial menu
+    const char* items[MAX_MENU_DEPTH * 10];
     for (int i = 0; i < current_menu_size; i++) {
-        menu_items[i] = current_menu[i].name;
+        items[i] = current_menu[i].name;
+        ESP_LOGI(TAG, "Menu item %d: %s", i, items[i]);
     }
-    update_menu(menu_items, current_menu_size, selected_index);
-}
+    update_menu(items, current_menu_size, selected_index);
 
-static void update_timers(void)
-{
-    update_timers(player1_time, player2_time, active_player);
-}
-
-static void button_task(void *pvParameter)
-{
+    ESP_LOGI(TAG, "Enter main loop");
+    // Main loop
     while (1) {
-        if (gpio_get_level(PIN_BUTTON_UP) == 0) {
-            if (selected_index > 0) selected_index--;
-            display_menu();
-        } else if (gpio_get_level(PIN_BUTTON_DOWN) == 0) {
-            if (selected_index < current_menu_size - 1) selected_index++;
-            display_menu();
-        } else if (gpio_get_level(PIN_BUTTON_SELECT) == 0) {
-            MenuItem *item = &current_menu[selected_index];
-            if (item->action) {
-                item->action();
-            } else if (item->submenu) {
-                current_menu = item->submenu;
-                current_menu_size = item->submenuSize;
-                selected_index = 0;
+        // Handle any pending LVGL tasks
+        lv_timer_handler();
+        
+        // Give other tasks a chance to run
+        vTaskDelay(pdMS_TO_TICKS(10));
+        
+        // Force a display update periodically
+        static uint32_t last_tick = 0;
+        if (lv_tick_get() - last_tick > 100) {  // Every 100ms
+            const char* current_items[MAX_MENU_DEPTH * 10];
+            for (int i = 0; i < current_menu_size; i++) {
+                current_items[i] = current_menu[i].name;
             }
-            display_menu();
-        } else if (gpio_get_level(PIN_BUTTON_BACK) == 0) {
-            if (current_menu != main_menu) {
-                current_menu = main_menu;
-                current_menu_size = sizeof(main_menu) / sizeof(MenuItem);
-                selected_index = 0;
-                display_menu();
-            }
-        } else if (gpio_get_level(PIN_BUTTON_PLAYER1) == 0) {
-            if (timer_running && active_player == 1) {
-                active_player = 2;
-            }
-        } else if (gpio_get_level(PIN_BUTTON_PLAYER2) == 0) {
-            if (timer_running && active_player == 2) {
-                active_player = 1;
-            }
+            update_menu(current_items, current_menu_size, selected_index);
+            last_tick = lv_tick_get();
         }
-        vTaskDelay(pdMS_TO_TICKS(100)); // Debounce delay
-    }
-}
-
-static void timer_task(void *pvParameter)
-{
-    while (1) {
-        if (timer_running) {
-            if (active_player == 1 && player1_time > 0) {
-                player1_time--;
-            } else if (active_player == 2 && player2_time > 0) {
-                player2_time--;
-            }
-
-            if (player1_time == 0 || player2_time == 0) {
-                timer_running = 0;
-                active_player = 0;
-                // TODO: Handle game end
-            }
-
-            update_timers();
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Update every second
-    }
-}
-
-// Helper function to execute menu item
-static void execute_menu_item(MenuItem* item)
-{
-    if (item->action) {
-        item->action();
-    } else if (item->submenu) {
-        current_menu = item->submenu;
-        current_menu_size = item->submenuSize;
-        selected_index = 0;
-    } else if (item->initialMinutes > 0) {
-        set_timer(item->initialMinutes, item->incrementSeconds);
-    }
-    display_menu();
-    update_timers();
-}
-
-// Helper function to go back to the main menu
-static void go_to_main_menu(void)
-{
-    current_menu = main_menu;
-    current_menu_size = sizeof(main_menu) / sizeof(MenuItem);
-    selected_index = 0;
-    display_menu();
-}
-
-// Modify the button_task to use execute_menu_item and go_to_main_menu
-static void button_task(void *pvParameter)
-{
-    while (1) {
-        if (gpio_get_level(PIN_BUTTON_UP) == 0) {
-            if (selected_index > 0) selected_index--;
-            display_menu();
-        } else if (gpio_get_level(PIN_BUTTON_DOWN) == 0) {
-            if (selected_index < current_menu_size - 1) selected_index++;
-            display_menu();
-        } else if (gpio_get_level(PIN_BUTTON_SELECT) == 0) {
-            execute_menu_item(&current_menu[selected_index]);
-        } else if (gpio_get_level(PIN_BUTTON_BACK) == 0) {
-            if (current_menu != main_menu) {
-                go_to_main_menu();
-            }
-        } else if (gpio_get_level(PIN_BUTTON_PLAYER1) == 0) {
-            if (timer_running && active_player == 1) {
-                active_player = 2;
-            }
-        } else if (gpio_get_level(PIN_BUTTON_PLAYER2) == 0) {
-            if (timer_running && active_player == 2) {
-                active_player = 1;
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(100)); // Debounce delay
     }
 }
