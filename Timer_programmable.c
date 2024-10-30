@@ -290,11 +290,11 @@ void timer_task(void *pvParameters) {
 /**
  * @brief Application entry point
  */
-void app_main(int x, int y) {
+void app_main(void) {
     // Initialize system components
     init_display();
     init_buttons();
-    set_timer_config(x, y);  // x minutes with y second increment
+
     // Examples of different time control configurations:
     // set_timer_config(5, 3);  // 5 minutes with 3 second increment
     // set_timer_config(3, 2);  // 3 minutes with 2 second increment
