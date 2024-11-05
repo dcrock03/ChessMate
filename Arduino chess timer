@@ -1,4 +1,5 @@
 // Pin definitions
+
 const int button1Pin = 4;  // Player 1's button
 const int button2Pin = 5;  // Player 2's button
 const int led1Pin = 6;     // Player 1's LED
