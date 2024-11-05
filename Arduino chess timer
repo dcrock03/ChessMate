@@ -1,0 +1,268 @@
+// Pin definitions
+const int button1Pin = 4;  // Player 1's button
+const int button2Pin = 5;  // Player 2's button
+const int led1Pin = 6;     // Player 1's LED
+const int led2Pin = 7;     // Player 2's LED
+const int buzzerPin = 3;   // Shared buzzer for time completion
+
+// Timer settings
+const unsigned long TIMER1_DEFAULT = 600;  // 10 minutes in seconds
+const unsigned long TIMER2_DEFAULT = 600;
+unsigned long timer1 = TIMER1_DEFAULT;
+unsigned long timer2 = TIMER2_DEFAULT;
+const unsigned long TIME_INCREMENT = 5;    // Seconds to add on button press
+
+// Timer state variables
+int currentTimer = 1;      // 1 for Player 1, 2 for Player 2
+bool timerRunning = false;
+bool timerComplete = false;
+
+// Button handling variables
+int prevButton1State = LOW;
+int prevButton2State = LOW;
+int currButton1State = LOW;
+int currButton2State = LOW;
+unsigned long lastDebounceTime1 = 0;
+unsigned long lastDebounceTime2 = 0;
+const unsigned long debounceDelay = 50;
+
+// Timer tracking variables
+unsigned long timerStartTime = 0;
+unsigned long elapsedSeconds = 0;
+unsigned long timer1Elapsed = 0;
+unsigned long timer2Elapsed = 0;
+
+// Display formatting constants
+const char ACTIVE_MARKER = '>';
+const char INACTIVE_MARKER = ' ';
+
+void setup() {
+  pinMode(button1Pin, INPUT);
+  pinMode(button2Pin, INPUT);
+  pinMode(led1Pin, OUTPUT);
+  pinMode(led2Pin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  Serial.begin(9600);
+  printInstructions();
+  updateLEDs();
+}
+
+void loop() {
+  handleButtons();
+  
+  if (timerRunning) {
+    updateTimer();
+  }
+}
+
+void handleButtons() {
+  // Handle Player 1's button with debounce
+  int reading1 = digitalRead(button1Pin);
+  if (reading1 != prevButton1State) {
+    lastDebounceTime1 = millis();
+  }
+  if ((millis() - lastDebounceTime1) > debounceDelay) {
+    if (reading1 != currButton1State) {
+      currButton1State = reading1;
+      if (currButton1State == HIGH) {
+        handleButton1Press();
+      }
+    }
+  }
+  prevButton1State = reading1;
+
+  // Handle Player 2's button with debounce
+  int reading2 = digitalRead(button2Pin);
+  if (reading2 != prevButton2State) {
+    lastDebounceTime2 = millis();
+  }
+  if ((millis() - lastDebounceTime2) > debounceDelay) {
+    if (reading2 != currButton2State) {
+      currButton2State = reading2;
+      if (currButton2State == HIGH) {
+        handleButton2Press();
+      }
+    }
+  }
+  prevButton2State = reading2;
+}
+
+void handleButton1Press() {
+  if (timerComplete) {
+    resetTimer();
+    return;
+  }
+  
+  if (!timerRunning) {
+    startTimer();
+    return;
+  }
+
+  // Only process if it's Player 1's turn
+  if (currentTimer == 1) {
+    // Add time to Player 1's timer and switch to Player 2
+    timer1Elapsed = getElapsedTime();
+    timer1 += TIME_INCREMENT;
+    Serial.println("Added 5 seconds to Player 1's timer");
+    switchToPlayer2();
+    provideFeedback();
+  } else {
+    Serial.println("Not Player 1's turn!");
+  }
+}
+
+void handleButton2Press() {
+  if (timerComplete) {
+    resetTimer();
+    return;
+  }
+  
+  if (!timerRunning) {
+    startTimer();
+    return;
+  }
+
+  // Only process if it's Player 2's turn
+  if (currentTimer == 2) {
+    // Add time to Player 2's timer and switch to Player 1
+    timer2Elapsed = getElapsedTime();
+    timer2 += TIME_INCREMENT;
+    Serial.println("Added 5 seconds to Player 2's timer");
+    switchToPlayer1();
+    provideFeedback();
+  } else {
+    Serial.println("Not Player 2's turn!");
+  }
+}
+
+void startTimer() {
+  timerRunning = true;
+  timerStartTime = millis();
+  Serial.println("Game started! Player 1's turn");
+  updateLEDs();
+}
+
+void switchToPlayer1() {
+  currentTimer = 1;
+  timerStartTime = millis() - (timer1Elapsed * 1000);
+  Serial.println("Switched to Player 1");
+  displayTimerStatus();
+  updateLEDs();
+}
+
+void switchToPlayer2() {
+  currentTimer = 2;
+  timerStartTime = millis() - (timer2Elapsed * 1000);
+  Serial.println("Switched to Player 2");
+  displayTimerStatus();
+  updateLEDs();
+}
+
+void updateLEDs() {
+  digitalWrite(led1Pin, currentTimer == 1 ? HIGH : LOW);
+  digitalWrite(led2Pin, currentTimer == 2 ? HIGH : LOW);
+}
+
+void provideFeedback() {
+  tone(buzzerPin, 2000, 100);
+}
+
+void resetTimer() {
+  timerComplete = false;
+  timerRunning = false;
+  timer1 = TIMER1_DEFAULT;
+  timer2 = TIMER2_DEFAULT;
+  timer1Elapsed = 0;
+  timer2Elapsed = 0;
+  currentTimer = 1;
+  updateLEDs();
+  Serial.println("Timers reset!");
+  displayTimerStatus();
+}
+
+void updateTimer() {
+  unsigned long currentTime = millis();
+  elapsedSeconds = getElapsedTime();
+  unsigned long currentTimerValue = (currentTimer == 1) ? timer1 : timer2;
+  
+  if (elapsedSeconds >= currentTimerValue) {
+    timerComplete = true;
+    timerRunning = false;
+    signalTimerComplete();
+  }
+  
+  // Update display every second
+  static unsigned long lastDisplayUpdate = 0;
+  if (currentTime - lastDisplayUpdate >= 1000) {
+    displayTimerStatus();
+    lastDisplayUpdate = currentTime;
+  }
+}
+
+unsigned long getElapsedTime() {
+  return (millis() - timerStartTime) / 1000;
+}
+
+void signalTimerComplete() {
+  // Turn off both LEDs
+  digitalWrite(led1Pin, LOW);
+  digitalWrite(led2Pin, LOW);
+  
+  // Sound the buzzer
+  tone(buzzerPin, 1000, 1000);
+  
+  String winner = (currentTimer == 1) ? "2" : "1";
+  Serial.println("Time's up! Player " + winner + " wins!");
+}
+
+String formatTime(unsigned long totalSeconds) {
+  int minutes = totalSeconds / 60;
+  int seconds = totalSeconds % 60;
+  return String(minutes) + ":" + (seconds < 10 ? "0" : "") + String(seconds);
+}
+
+void displayTimerStatus() {
+  // Calculate remaining time for Timer 1
+  unsigned long timer1Remaining;
+  if (currentTimer == 1) {
+    timer1Remaining = (elapsedSeconds >= timer1) ? 0 : (timer1 - elapsedSeconds);
+  } else {
+    timer1Remaining = (timer1Elapsed >= timer1) ? 0 : (timer1 - timer1Elapsed);
+  }
+
+  // Calculate remaining time for Timer 2
+  unsigned long timer2Remaining;
+  if (currentTimer == 2) {
+    timer2Remaining = (elapsedSeconds >= timer2) ? 0 : (timer2 - elapsedSeconds);
+  } else {
+    timer2Remaining = (timer2Elapsed >= timer2) ? 0 : (timer2 - timer2Elapsed);
+  }
+
+  Serial.println("\n----- Timer Status -----");
+  Serial.print((currentTimer == 1) ? ACTIVE_MARKER : INACTIVE_MARKER);
+  Serial.print(" Player 1: ");
+  Serial.println(formatTime(timer1Remaining));
+  
+  Serial.print((currentTimer == 2) ? ACTIVE_MARKER : INACTIVE_MARKER);
+  Serial.print(" Player 2: ");
+  Serial.println(formatTime(timer2Remaining));
+  
+  Serial.println("---------------------");
+}
+
+void printInstructions() {
+  Serial.println("\nTwo Player Chess Timer");
+  Serial.println("--------------------");
+  Serial.println("Either player can press their button to start");
+  Serial.println("When it's your turn:");
+  Serial.println("- Your LED will be lit");
+  Serial.println("- Press your button to end your turn");
+  Serial.println("- This adds 5 seconds to your time");
+  Serial.println("- Switches to other player's turn");
+  Serial.println("If not your turn, your button does nothing");
+  Serial.println("Game ends when a player's time runs out");
+  Serial.println("Any button press after game ends resets both timers");
+  Serial.println("--------------------");
+  Serial.println("> indicates active player");
+  Serial.println("--------------------\n");
+}
