@@ -1,0 +1,169 @@
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_timer.h"
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+// GPIO definitions
+#define PLAYER1_BUTTON GPIO_NUM_4
+#define PLAYER2_BUTTON GPIO_NUM_5
+#define LED_PLAYER1    GPIO_NUM_2
+#define LED_PLAYER2    GPIO_NUM_15
+
+// Timer definitions
+#define INITIAL_TIME_MS (10 * 60 * 1000)  // 10 minutes
+#define BONUS_TIME_MS   (5 * 1000)        // 5 seconds
+#define DEBOUNCE_MS    50                 // 50ms debounce
+
+// Game states
+#define GAME_IDLE      0
+#define GAME_RUNNING   1
+#define GAME_FINISHED  2
+
+// Shared variables protected by mutex
+static struct {
+    int64_t player1_time_remaining;
+    int64_t player2_time_remaining;
+    int active_player;
+    int game_state;
+    int64_t last_switch_time;
+} game_data = {
+    .player1_time_remaining = INITIAL_TIME_MS,
+    .player2_time_remaining = INITIAL_TIME_MS,
+    .active_player = 1,
+    .game_state = GAME_IDLE,
+    .last_switch_time = 0
+};
+
+static SemaphoreHandle_t game_mutex = NULL;
+static const char *TAG = "CHESS_CLOCK";
+
+void IRAM_ATTR button_isr_handler(void* arg) {
+    int player = (int)arg;
+    int64_t now = esp_timer_get_time();
+    
+    // Basic debouncing
+    if (now - game_data.last_switch_time < DEBOUNCE_MS * 1000) {
+        return;
+    }
+    
+    // Only process if game is not finished
+    if (game_data.game_state == GAME_FINISHED) {
+        return;
+    }
+    
+    // Start game if in IDLE state
+    if (game_data.game_state == GAME_IDLE) {
+        if (player == game_data.active_player) {
+            game_data.game_state = GAME_RUNNING;
+            game_data.last_switch_time = now;
+        }
+        return;
+    }
+    
+    // Only allow correct player to switch
+    if (player != game_data.active_player) {
+        game_data.last_switch_time = now;
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(game_mutex, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+void update_active_player(void) {
+    if (xSemaphoreTake(game_mutex, portMAX_DELAY)) {
+        int64_t now = esp_timer_get_time();
+        int64_t elapsed_time = (now - game_data.last_switch_time) / 1000;
+        
+        // Update current player's time
+        if (game_data.active_player == 1) {
+            game_data.player1_time_remaining -= elapsed_time;
+            game_data.player1_time_remaining += BONUS_TIME_MS;
+            gpio_set_level(LED_PLAYER1, 0);
+            gpio_set_level(LED_PLAYER2, 1);
+            game_data.active_player = 2;
+        } else {
+            game_data.player2_time_remaining -= elapsed_time;
+            game_data.player2_time_remaining += BONUS_TIME_MS;
+            gpio_set_level(LED_PLAYER1, 1);
+            gpio_set_level(LED_PLAYER2, 0);
+            game_data.active_player = 1;
+        }
+        
+        game_data.last_switch_time = now;
+        xSemaphoreGive(game_mutex);
+    }
+}
+
+void timer_task(void* arg) {
+    TickType_t last_wake_time = xTaskGetTickCount();
+    
+    while (1) {
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(100));
+        
+        if (game_data.game_state != GAME_RUNNING) {
+            continue;
+        }
+        
+        int64_t now = esp_timer_get_time();
+        int64_t elapsed_time = (now - game_data.last_switch_time) / 1000;
+        
+        // Check for time expiration
+        if (game_data.active_player == 1 && 
+            game_data.player1_time_remaining - elapsed_time <= 0) {
+            ESP_LOGI(TAG, "Player 1 out of time!");
+            game_data.player1_time_remaining = 0;
+            game_data.game_state = GAME_FINISHED;
+        } else if (game_data.active_player == 2 && 
+                   game_data.player2_time_remaining - elapsed_time <= 0) {
+            ESP_LOGI(TAG, "Player 2 out of time!");
+            game_data.player2_time_remaining = 0;
+            game_data.game_state = GAME_FINISHED;
+        }
+        
+        // Log current times
+        ESP_LOGI(TAG, "P1: %lld ms, P2: %lld ms", 
+                 game_data.player1_time_remaining - (game_data.active_player == 1 ? elapsed_time : 0),
+                 game_data.player2_time_remaining - (game_data.active_player == 2 ? elapsed_time : 0));
+    }
+}
+
+void app_main(void) {
+    // Create mutex
+    game_mutex = xSemaphoreCreateMutex();
+    if (game_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create mutex");
+        return;
+    }
+    
+    // Configure buttons
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << PLAYER1_BUTTON) | (1ULL << PLAYER2_BUTTON),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_NEGEDGE,
+    };
+    gpio_config(&io_conf);
+    
+    // Configure LEDs
+    gpio_set_direction(LED_PLAYER1, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_PLAYER2, GPIO_MODE_OUTPUT);
+    gpio_set_level(LED_PLAYER1, 1);
+    gpio_set_level(LED_PLAYER2, 0);
+    
+    // Install ISR service
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(PLAYER1_BUTTON, button_isr_handler, (void*)1);
+    gpio_isr_handler_add(PLAYER2_BUTTON, button_isr_handler, (void*)2);
+    
+    // Initialize game state
+    game_data.last_switch_time = esp_timer_get_time();
+    
+    // Create timer task
+    xTaskCreate(timer_task, "timer_task", 2048, NULL, 5, NULL);
+    
+    ESP_LOGI(TAG, "Chess clock initialized");
+}
