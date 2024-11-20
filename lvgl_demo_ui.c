@@ -1,4 +1,4 @@
-#include "lvgl.h"
+#include "lvgl_demo_ui.h"
 #include <stdio.h>
 #include "esp_log.h"
 
@@ -37,46 +37,63 @@ void example_lvgl_demo_ui(lv_disp_t *disp)
     lv_obj_set_style_bg_color(main_screen, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(main_screen, LV_OPA_COVER, 0);
 
-    // Create menu container (reduce height to 70% to make room for message)
+    // Create left side menu container (65% of screen width)
     menu_cont = lv_obj_create(main_screen);
-    lv_obj_set_size(menu_cont, lv_pct(100), lv_pct(70));
-    lv_obj_align(menu_cont, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_size(menu_cont, lv_pct(65), lv_pct(100));
+    lv_obj_align(menu_cont, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_color(menu_cont, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(menu_cont, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(menu_cont, 0, 0);
+    lv_obj_set_style_pad_all(menu_cont, 15, 0);
     lv_obj_clear_flag(menu_cont, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Create timer labels
-    timer1_label = lv_label_create(main_screen);
-    lv_obj_align(timer1_label, LV_ALIGN_BOTTOM_LEFT, 10, -10);
+    // Create right side container (35% of screen width)
+    lv_obj_t *right_cont = lv_obj_create(main_screen);
+    lv_obj_set_size(right_cont, lv_pct(35), lv_pct(100));
+    lv_obj_align(right_cont, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(right_cont, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(right_cont, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(right_cont, 0, 0);
+    lv_obj_set_style_pad_all(right_cont, 10, 0);
+
+    // Create timer labels in the right container
+    timer1_label = lv_label_create(right_cont);
+    lv_obj_align(timer1_label, LV_ALIGN_TOP_MID, 0, 30);
     lv_obj_set_style_text_color(timer1_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(timer1_label, &lv_font_montserrat_14, 0);
     lv_label_set_text(timer1_label, "P1: 10:00");
 
-    timer2_label = lv_label_create(main_screen);
-    lv_obj_align(timer2_label, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+    timer2_label = lv_label_create(right_cont);
+    lv_obj_align(timer2_label, LV_ALIGN_BOTTOM_MID, 0, -30);
     lv_obj_set_style_text_color(timer2_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(timer2_label, &lv_font_montserrat_14, 0);
     lv_label_set_text(timer2_label, "P2: 10:00");
 
     // Initialize message background style
     lv_style_init(&style_msg_bg);
-    lv_style_set_bg_color(&style_msg_bg, lv_color_make(40, 40, 40));  // Dark gray background
-    lv_style_set_bg_opa(&style_msg_bg, LV_OPA_70);  // Semi-transparent
-    lv_style_set_pad_all(&style_msg_bg, 10);  // Padding around text
-    lv_style_set_radius(&style_msg_bg, 5);    // Rounded corners
+    lv_style_set_bg_color(&style_msg_bg, lv_color_make(40, 40, 40));
+    lv_style_set_bg_opa(&style_msg_bg, LV_OPA_70);
+    lv_style_set_pad_all(&style_msg_bg, 4);
+    lv_style_set_radius(&style_msg_bg, 2);
+    lv_style_set_max_width(&style_msg_bg, 100);
+    lv_style_set_text_align(&style_msg_bg, LV_TEXT_ALIGN_CENTER);
 
     // Create message background container
-    lv_obj_t *msg_bg = lv_obj_create(main_screen);
+    lv_obj_t *msg_bg = lv_obj_create(menu_cont);
     lv_obj_add_style(msg_bg, &style_msg_bg, 0);
-    lv_obj_align(msg_bg, LV_ALIGN_BOTTOM_MID, 0, -35);  // Position above timers
+    lv_obj_align(msg_bg, LV_ALIGN_TOP_LEFT, 10, 5);
     lv_obj_set_size(msg_bg, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_width(msg_bg, 100, 0);
     lv_obj_add_flag(msg_bg, LV_OBJ_FLAG_HIDDEN);
 
     // Create message label
     msg_label = lv_label_create(msg_bg);
     lv_obj_set_style_text_color(msg_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(msg_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(msg_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(msg_label, LV_SIZE_CONTENT);
+    lv_obj_set_style_max_width(msg_label, 90, 0);
+    lv_label_set_long_mode(msg_label, LV_LABEL_LONG_WRAP);
     lv_obj_center(msg_label);
     lv_obj_add_flag(msg_label, LV_OBJ_FLAG_HIDDEN);
 }
