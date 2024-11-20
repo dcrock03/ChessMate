@@ -3,6 +3,8 @@
 #define MENU_DATA_H
 
 #include <stddef.h>
+#include "lvgl_demo_ui.h"
+
 
 // Forward declaration of display_message function
 void display_message(const char* message);
