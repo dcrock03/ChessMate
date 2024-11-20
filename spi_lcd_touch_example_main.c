@@ -13,6 +13,7 @@
 #include "lvgl.h"
 #include "menu_data.h"
 #include "esp_lcd_ili9341.h"
+#include "lvgl_demo_ui.h"
 
 #define MAX_MENU_DEPTH 5
 #define LCD_PIXEL_CLOCK_HZ     (20 * 1000 * 1000)
@@ -26,19 +27,18 @@
 #define PIN_NUM_LCD_CS         5
 #define PIN_NUM_BK_LIGHT       16
 
-#define PIN_BUTTON_UP          21  // Physical up button
-#define PIN_BUTTON_DOWN        22  // Physical down button
-#define PIN_BUTTON_SELECT      14  // Physical select button
+#define PIN_BUTTON_UP          21
+#define PIN_BUTTON_DOWN        22
+#define PIN_BUTTON_SELECT      14
 #define PIN_BUTTON_PLAYER1     12
 #define PIN_BUTTON_PLAYER2     26
 
-#define LCD_H_RES              240
-#define LCD_V_RES              320
+// Updated resolution for horizontal orientation
+#define LCD_H_RES              320
+#define LCD_V_RES              240
 #define LCD_HOST              SPI2_HOST
 
 static const char *TAG = "example";
-
-
 
 // Global variables for menu state
 static MenuItem* current_menu;
@@ -138,10 +138,7 @@ void menu_select(void) {
     }
 }
 
-// Modified button task with better debouncing and state tracking
-static void button_task(void *pvParameter)
-{
-    // Initialize button states
+static void button_task(void *pvParameter) {
     bool last_up_state = false;
     bool last_down_state = false;
     bool last_select_state = false;
@@ -150,72 +147,47 @@ static void button_task(void *pvParameter)
     bool button_pressed = false;
     
     TickType_t last_press_time = 0;
-    const TickType_t debounce_delay = pdMS_TO_TICKS(50);  // 50ms debounce
+    const TickType_t debounce_delay = pdMS_TO_TICKS(50);
 
     while (1) {
         TickType_t now = xTaskGetTickCount();
         
-        // Read current button states - active high with pull-down
         bool current_up_state = gpio_get_level(PIN_BUTTON_UP);
         bool current_down_state = gpio_get_level(PIN_BUTTON_DOWN);
         bool current_select_state = gpio_get_level(PIN_BUTTON_SELECT);
         bool current_player1_state = gpio_get_level(PIN_BUTTON_PLAYER1);
         bool current_player2_state = gpio_get_level(PIN_BUTTON_PLAYER2);
 
-        // Check if enough time has passed since last button press
         if ((now - last_press_time) >= debounce_delay && !button_pressed) {
-            // Up button (active high with pull-down)
             if (current_up_state == 1 && last_up_state == 0) {
                 ESP_LOGI(TAG, "UP button pressed");
                 menu_up();
-                const char* items[MAX_MENU_DEPTH * 10];
-                for (int i = 0; i < current_menu_size; i++) {
-                    items[i] = current_menu[i].name;
-                }
-                update_menu(items, current_menu_size, selected_index);
                 button_pressed = true;
                 last_press_time = now;
             }
-            
-            // Down button
             else if (current_down_state == 1 && last_down_state == 0) {
                 ESP_LOGI(TAG, "DOWN button pressed");
                 menu_down();
-                const char* items[MAX_MENU_DEPTH * 10];
-                for (int i = 0; i < current_menu_size; i++) {
-                    items[i] = current_menu[i].name;
-                }
-                update_menu(items, current_menu_size, selected_index);
                 button_pressed = true;
                 last_press_time = now;
             }
-            
-            // Select button
             else if (current_select_state == 1 && last_select_state == 0) {
                 ESP_LOGI(TAG, "SELECT button pressed");
                 menu_select();
-                const char* items[MAX_MENU_DEPTH * 10];
-                for (int i = 0; i < current_menu_size; i++) {
-                    items[i] = current_menu[i].name;
-                }
-                update_menu(items, current_menu_size, selected_index);
                 button_pressed = true;
                 last_press_time = now;
             }
-            
-            // Player button press handling
             else if (timer_running) {
-                // Only handle player button presses if the timer is running
                 if (current_player1_state == 1 && last_player1_state == 0 && active_player == 1) {
                     ESP_LOGI(TAG, "Player 1 button pressed");
-                    active_player = 2;  // Switch to Player 2
+                    active_player = 2;
                     display_message("Player 2's Turn");
                     button_pressed = true;
                     last_press_time = now;
                 }
                 else if (current_player2_state == 1 && last_player2_state == 0 && active_player == 2) {
                     ESP_LOGI(TAG, "Player 2 button pressed");
-                    active_player = 1;  // Switch to Player 1
+                    active_player = 1;
                     display_message("Player 1's Turn");
                     button_pressed = true;
                     last_press_time = now;
@@ -223,29 +195,25 @@ static void button_task(void *pvParameter)
             }
         }
 
-        // Reset button_pressed when all buttons are released
         if (current_up_state == 0 && current_down_state == 0 && 
             current_select_state == 0 && current_player1_state == 0 && 
             current_player2_state == 0) {
             button_pressed = false;
         }
 
-        // Update last states
         last_up_state = current_up_state;
         last_down_state = current_down_state;
         last_select_state = current_select_state;
         last_player1_state = current_player1_state;
         last_player2_state = current_player2_state;
 
-        vTaskDelay(pdMS_TO_TICKS(10));  // 10ms polling interval
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
-static void timer_task(void *pvParameter)
-{
+static void timer_task(void *pvParameter) {
     while (1) {
         if (timer_running) {
-            // Update the active player's timer
             if (active_player == 1 && player1_time > 0) {
                 player1_time--;
             } 
@@ -253,10 +221,8 @@ static void timer_task(void *pvParameter)
                 player2_time--;
             }
 
-            // Update display
             update_timers(player1_time, player2_time, active_player);
 
-            // Check for game over conditions
             if (player1_time == 0) {
                 timer_running = 0;
                 active_player = 0;
@@ -268,7 +234,7 @@ static void timer_task(void *pvParameter)
                 display_message("Game Over - Player 1 Wins!");
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(1000)); // Update every second
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -283,8 +249,8 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
 }
 
 void app_main(void) {
-    static lv_disp_draw_buf_t disp_buf;  // Contains internal graphic buffer(s)
-    static lv_disp_drv_t disp_drv;       // Contains callback functions
+    static lv_disp_draw_buf_t disp_buf;
+    static lv_disp_drv_t disp_drv;
 
     ESP_LOGI(TAG, "Initialize SPI bus");
     spi_bus_config_t buscfg = {
@@ -320,22 +286,25 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(io_handle, &panel_config, &panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
+    
+    // Configure for horizontal orientation
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
+    
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
     ESP_LOGI(TAG, "Initialize LVGL library");
     lv_init();
 
-    // Allocate buffers for LVGL drawing
     ESP_LOGI(TAG, "Allocate separate LVGL buffer");
-    void *buf1 = heap_caps_malloc(LCD_H_RES * 20 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    // Allocate larger buffer for horizontal orientation
+    void *buf1 = heap_caps_malloc(LCD_H_RES * 40 * sizeof(lv_color_t), MALLOC_CAP_DMA);
     assert(buf1);
-    void *buf2 = heap_caps_malloc(LCD_H_RES * 20 * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    void *buf2 = heap_caps_malloc(LCD_H_RES * 40 * sizeof(lv_color_t), MALLOC_CAP_DMA);
     assert(buf2);
     
-    // Initialize LVGL draw buffers
     ESP_LOGI(TAG, "Initialize LVGL draw buffers");
-    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, LCD_H_RES * 20);
+    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, LCD_H_RES * 40);
 
     ESP_LOGI(TAG, "Register display driver to LVGL");
     lv_disp_drv_init(&disp_drv);
@@ -347,39 +316,42 @@ void app_main(void) {
     lv_disp_drv_register(&disp_drv);
 
     ESP_LOGI(TAG, "Initialize buttons");
-    // Initialize button GPIO with internal pull-down
     gpio_config_t io_conf = {
-    .intr_type = GPIO_INTR_DISABLE,
-    .mode = GPIO_MODE_INPUT,
-    .pin_bit_mask = ((1ULL << PIN_BUTTON_UP) | 
-                     (1ULL << PIN_BUTTON_DOWN) | 
-                     (1ULL << PIN_BUTTON_SELECT) |
-                     (1ULL << PIN_BUTTON_PLAYER1) |
-                     (1ULL << PIN_BUTTON_PLAYER2)),
-    .pull_up_en = GPIO_PULLUP_DISABLE,    // Disable pull-up
-    .pull_down_en = GPIO_PULLDOWN_ENABLE  // Enable pull-down
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_INPUT,
+        .pin_bit_mask = ((1ULL << PIN_BUTTON_UP) | 
+                        (1ULL << PIN_BUTTON_DOWN) | 
+                        (1ULL << PIN_BUTTON_SELECT) |
+                        (1ULL << PIN_BUTTON_PLAYER1) |
+                        (1ULL << PIN_BUTTON_PLAYER2)),
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE
     };
     gpio_config(&io_conf);
 
+    // Initialize backlight
+    gpio_config_t bk_gpio_config = {
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = 1ULL << PIN_NUM_BK_LIGHT
+    };
+    ESP_ERROR_CHECK(gpio_config(&bk_gpio_config));
+    gpio_set_level(PIN_NUM_BK_LIGHT, LCD_BK_LIGHT_ON_LEVEL);
+
     ESP_LOGI(TAG, "Initialize menu state");
-    // Initialize menu state
     current_menu = main_menu;
     current_menu_size = main_menu_size;
     selected_index = 0;
     menu_stack_top = -1;
 
     ESP_LOGI(TAG, "Create GUI");
-    // Create GUI and initialize LVGL display
     lv_disp_t *disp = lv_disp_get_default();
     example_lvgl_demo_ui(disp);
 
     ESP_LOGI(TAG, "Create tasks");
-    // Create tasks for button handling and timer
     xTaskCreate(button_task, "button_task", 4096, NULL, 10, NULL);
     xTaskCreate(timer_task, "timer_task", 4096, NULL, 10, NULL);
 
     ESP_LOGI(TAG, "Display initial menu");
-    // Display initial menu
     const char* items[MAX_MENU_DEPTH * 10];
     for (int i = 0; i < current_menu_size; i++) {
         items[i] = current_menu[i].name;
@@ -388,15 +360,11 @@ void app_main(void) {
     update_menu(items, current_menu_size, selected_index);
 
     ESP_LOGI(TAG, "Enter main loop");
-    // Main loop
     while (1) {
-        // Handle any pending LVGL tasks
+        // Run LVGL tick and task handler
         lv_timer_handler();
         
-        // Give other tasks a chance to run
-        vTaskDelay(pdMS_TO_TICKS(10));
-        
-        // Force a display update periodically
+        // Update display periodically
         static uint32_t last_tick = 0;
         if (lv_tick_get() - last_tick > 100) {  // Every 100ms
             const char* current_items[MAX_MENU_DEPTH * 10];
@@ -406,5 +374,7 @@ void app_main(void) {
             update_menu(current_items, current_menu_size, selected_index);
             last_tick = lv_tick_get();
         }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
